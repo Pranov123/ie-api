@@ -1,116 +1,42 @@
 import os
-import json
+import numpy as np
 from fastapi import FastAPI, Request
-from groq import Groq
+from openai import OpenAI
 
 app = FastAPI()
 
-client = Groq(api_key=os.environ["GROQ_API_KEY"])
-
-REQUIRED_KEYS = [
-    "vendor",
-    "currency",
-    "total_amount",
-    "invoice_date",
-    "due_in_days",
-    "is_paid",
-    "priority",
-    "contact_email",
-    "line_items",
-    "item_count",
-]
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
 
 @app.post("/")
-@app.post("/invoice-extraction")
-async def extract_invoice(req: Request):
-    payload = await req.json()
+@app.post("/rank")
+async def rank(req: Request):
+    body = await req.json()
 
-    text = payload.get("text", "")
-    schema = payload.get("schema", {})
+    query = body["query"]
+    candidates = body["candidates"]
 
-    prompt = f"""
-You are an invoice information extraction engine.
+    texts = [query] + candidates
 
-Return ONLY a valid JSON object.
-
-The JSON MUST exactly follow this schema:
-
-{json.dumps(schema, indent=2)}
-
-Extraction rules:
-
-- vendor: exactly as written.
-- currency: ISO 4217 code (USD, EUR, GBP, INR, JPY).
-- total_amount: integer in the major currency unit.
-- invoice_date: YYYY-MM-DD.
-- due_in_days: convert payment terms (Net 30 -> 30, two weeks -> 14, etc.).
-- is_paid: infer from wording.
-- priority: extract or infer ONLY from the document wording. Do NOT derive it from due_in_days.
-- contact_email: lowercase.
-- line_items: preserve original order.
-- item_count: number of line_items.
-
-Return exactly these keys and no others:
-
-vendor
-currency
-total_amount
-invoice_date
-due_in_days
-is_paid
-priority
-contact_email
-line_items
-item_count
-
-Document:
-
-{text}
-"""
-
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        temperature=0,
-        response_format={"type": "json_object"},
-        messages=[
-            {
-                "role": "system",
-                "content": "You extract invoice data and return only valid JSON."
-            },
-            {
-                "role": "user",
-                "content": prompt
-            },
-        ],
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=texts
     )
 
-    data = json.loads(response.choices[0].message.content)
+    embeddings = np.array([item.embedding for item in response.data], dtype=np.float32)
 
-    # Normalize fields
-    data["currency"] = str(data.get("currency", "")).upper()
-    data["contact_email"] = str(data.get("contact_email", "")).lower()
-    data["priority"] = str(data.get("priority", "")).lower()
+    query_embedding = embeddings[0]
+    candidate_embeddings = embeddings[1:]
 
-    # Ensure line_items exists
-    if not isinstance(data.get("line_items"), list):
-        data["line_items"] = []
+    # Normalize
+    query_embedding /= np.linalg.norm(query_embedding)
+    candidate_embeddings /= np.linalg.norm(candidate_embeddings, axis=1, keepdims=True)
 
-    normalized_items = []
+    # Cosine similarity
+    scores = candidate_embeddings @ query_embedding
 
-    for item in data["line_items"]:
-        normalized_items.append({
-            "sku": str(item.get("sku", "")),
-            "quantity": int(item.get("quantity", 0)),
-            "unit_price": int(item.get("unit_price", 0)),
-        })
+    top3 = np.argsort(scores)[-3:][::-1]
 
-    data["line_items"] = normalized_items
-    data["item_count"] = len(normalized_items)
-
-    cleaned = {}
-
-    for key in REQUIRED_KEYS:
-        cleaned[key] = data.get(key)
-
-    return cleaned
+    return {
+        "ranking": top3.tolist()
+    }

@@ -1,14 +1,12 @@
 services:
   - type: web
-    name: invoice-extractor-api
+    name: semantic-ranking-api
     runtime: python
 
-    buildCommand: |
-      pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt
 
-    startCommand: |
-      uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
 
     envVars:
-      - key: GROQ_API_KEY
+      - key: OPENAI_API_KEY
         sync: false
