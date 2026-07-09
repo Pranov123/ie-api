@@ -1,11 +1,11 @@
 import os
-import json
+import numpy as np
 from fastapi import FastAPI, Request
-from groq import Groq
+from openai import OpenAI
 
 app = FastAPI()
 
-client = Groq(api_key=os.environ["GROQ_API_KEY"])
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
 
 @app.post("/")
@@ -16,61 +16,33 @@ async def rank(req: Request):
     query = body["query"]
     candidates = body["candidates"]
 
-    prompt = f"""
-You are an expert semantic retrieval system.
+    texts = [query] + candidates
 
-Given a search query and candidate passages,
-identify the THREE passages that are most semantically relevant.
-
-Return ONLY valid JSON.
-
-Format:
-
-{{
-  "ranking": [i, j, k]
-}}
-
-Rules:
-- Return exactly 3 integer indices.
-- Indices refer to the positions in the candidates array.
-- Do NOT explain your reasoning.
-- Choose the passages that best answer the query semantically.
-
-Query:
-
-{query}
-
-Candidates:
-
-"""
-
-    for i, c in enumerate(candidates):
-        prompt += f"\n[{i}] {c}\n"
-
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        temperature=0,
-        response_format={"type": "json_object"},
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a semantic search ranking engine."
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=texts,
     )
 
-    result = json.loads(response.choices[0].message.content)
+    embeddings = np.array(
+        [item.embedding for item in response.data],
+        dtype=np.float32,
+    )
 
-    ranking = result.get("ranking", [])
+    query_embedding = embeddings[0]
+    candidate_embeddings = embeddings[1:]
 
-    # Safety cleanup
-    ranking = [int(i) for i in ranking if isinstance(i, (int, float))]
+    # Normalize embeddings
+    query_embedding /= np.linalg.norm(query_embedding)
+    candidate_embeddings /= np.linalg.norm(
+        candidate_embeddings,
+        axis=1,
+        keepdims=True,
+    )
 
-    # Ensure exactly 3 indices
-    ranking = ranking[:3]
+    # Cosine similarities
+    scores = candidate_embeddings @ query_embedding
+
+    # Indices of top 3 candidates
+    ranking = np.argsort(scores)[-3:][::-1].tolist()
 
     return {"ranking": ranking}
