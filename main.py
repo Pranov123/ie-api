@@ -1,9 +1,17 @@
 import os
 import numpy as np
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
